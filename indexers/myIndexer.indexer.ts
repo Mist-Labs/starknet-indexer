@@ -1,26 +1,29 @@
 import { defineIndexer } from "apibara/indexer";
 import { useLogger } from "apibara/plugins";
 import { htlc_events } from "lib/schema";
-import { useDrizzleStorage } from "@apibara/plugin-drizzle";
+import { drizzleStorage, useDrizzleStorage } from "@apibara/plugin-drizzle";
 import { drizzle } from "@apibara/plugin-drizzle";
 import { StarknetStream } from "@apibara/starknet";
 import type { ApibaraRuntimeConfig } from "apibara/types";
-import { eq, and } from "drizzle-orm";
-import {
-  sendEventToRelayer,
-  validateRelayerVariables,
-} from "utils/relayerApi";
-import {
-  DEPOSIT_EVENT_KEY,
-  HTLC_CREATED_EVENT_KEY,
-  WITHDRAWAL_EVENT_KEY,
-} from "utils/eventSelectors";
+import { eq } from "drizzle-orm";
+import { sendEventToRelayer, validateRelayerVariables } from "utils/relayerApi";
+// import {
+//   DEPOSIT_EVENT_KEY,
+//   HTLC_CREATED_EVENT_KEY,
+//   WITHDRAWAL_EVENT_KEY,
+// } from "utils/eventSelectors";
 
-// Pool addresses
+export const DEPOSIT_EVENT_KEY =
+  "0x009149d2123147c5f43d258257fef0b7b969db78269369ebcf5ebb9eef8592f2";
+export const HTLC_CREATED_EVENT_KEY =
+  "0x001548a4d5508e503975e8ef480a1b0f2b55fe480799be7764b93828870abae16";
+export const WITHDRAWAL_EVENT_KEY =
+  "0x002eed7e29b3502a726faf503ac4316b7101f3da813654e8df02c13449e03da8";
+
 const FAST_POOL_ADDRESS =
-  "0x01749627bb08da4f8c3df6c55045ac429abdceada025262d4c51430d643db84e";
+  "0x01749627bb08da4f8c3df6c55045ac429abdceada025262d4c51430d643db84e".toLowerCase();
 const STANDARD_POOL_ADDRESS =
-  "0x05cf3a281b3932cb4fec5648558c05fe796bd2d1b6e75554e3306c4849b82ed8";
+  "0x05cf3a281b3932cb4fec5648558c05fe796bd2d1b6e75554e3306c4849b82ed8".toLowerCase();
 
 interface DepositEvent {
   commitment: string;
@@ -47,15 +50,15 @@ interface SwapEventData {
   nullifier?: string;
   hash_lock?: string;
   commitment?: string;
-  timelock?: string;
+  timelock?: BigInt;
+  timestamp?: BigInt;
   secret?: string;
+  pool_type?: string;
 }
 
 function decodeDepositEvent(event: any): DepositEvent | null {
   try {
     const { data, keys } = event;
-
-    // Keys[0] is the event selector, keys[1] is the commitment (marked with #[key])
     const commitment = keys[1];
     const leaf_index = Number(data[0]);
     const timestamp = BigInt(data[1]);
@@ -74,8 +77,6 @@ function decodeDepositEvent(event: any): DepositEvent | null {
 function decodeHTLCCreatedEvent(event: any): HTLCCreatedEvent | null {
   try {
     const { data, keys } = event;
-
-    // Keys[0] is the event selector, keys[1] is the nullifier (marked with #[key])
     const nullifier = keys[1];
     const hash_lock = data[0];
     const timelock = BigInt(data[1]);
@@ -96,8 +97,6 @@ function decodeHTLCCreatedEvent(event: any): HTLCCreatedEvent | null {
 function decodeWithdrawalEvent(event: any): WithdrawalEvent | null {
   try {
     const { data, keys } = event;
-
-    // Keys[0] is the event selector, keys[1] is the nullifier (marked with #[key])
     const nullifier = keys[1];
     const timestamp = BigInt(data[0]);
 
@@ -113,26 +112,29 @@ function decodeWithdrawalEvent(event: any): WithdrawalEvent | null {
 
 function getEventType(event: any): string | null {
   const keys = event.keys || [];
-
   if (!keys.length) return null;
 
   const eventKey = keys[0];
 
   if (eventKey === DEPOSIT_EVENT_KEY) return "deposit";
   if (eventKey === HTLC_CREATED_EVENT_KEY) return "htlc_created";
-  if (eventKey === WITHDRAWAL_EVENT_KEY) {
-    return "htlc_redeemed";
-  }
+  if (eventKey === WITHDRAWAL_EVENT_KEY) return "htlc_redeemed";
 
   return null;
 }
 
 function isFromPoolContract(event: any): boolean {
-  const fromAddress = event.fromAddress?.toLowerCase();
+  const fromAddress = event.address?.toLowerCase();
   return (
-    fromAddress === FAST_POOL_ADDRESS.toLowerCase() ||
-    fromAddress === STANDARD_POOL_ADDRESS.toLowerCase()
+    fromAddress === FAST_POOL_ADDRESS || fromAddress === STANDARD_POOL_ADDRESS
   );
+}
+
+function determinePoolType(event: any): string {
+  const addr = event.address?.toLowerCase();
+  if (addr === FAST_POOL_ADDRESS) return "fast";
+  if (addr === STANDARD_POOL_ADDRESS) return "standard";
+  return "fast";
 }
 
 export default function (runtimeConfig: ApibaraRuntimeConfig) {
@@ -149,31 +151,41 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
     finality: "accepted",
     startingBlock: BigInt(startingBlock),
     filter: {
-      header: "always",
+      header: "on_data",
       events: [
+        // FAST POOL EVENTS
         {
           address: FAST_POOL_ADDRESS as `0x${string}`,
-          keys: [
-            DEPOSIT_EVENT_KEY as `0x${string}`,
-            HTLC_CREATED_EVENT_KEY as `0x${string}`,
-            WITHDRAWAL_EVENT_KEY as `0x${string}`,
-          ],
+          keys: [DEPOSIT_EVENT_KEY as `0x${string}`],
+        },
+        {
+          address: FAST_POOL_ADDRESS as `0x${string}`,
+          keys: [HTLC_CREATED_EVENT_KEY as `0x${string}`],
+        },
+        {
+          address: FAST_POOL_ADDRESS as `0x${string}`,
+          keys: [WITHDRAWAL_EVENT_KEY as `0x${string}`],
+        },
+        // STANDARD POOL EVENTS
+        {
+          address: STANDARD_POOL_ADDRESS as `0x${string}`,
+          keys: [DEPOSIT_EVENT_KEY as `0x${string}`],
         },
         {
           address: STANDARD_POOL_ADDRESS as `0x${string}`,
-          keys: [
-            DEPOSIT_EVENT_KEY as `0x${string}`,
-            HTLC_CREATED_EVENT_KEY as `0x${string}`,
-            WITHDRAWAL_EVENT_KEY as `0x${string}`,
-          ],
+          keys: [HTLC_CREATED_EVENT_KEY as `0x${string}`],
+        },
+        {
+          address: STANDARD_POOL_ADDRESS as `0x${string}`,
+          keys: [WITHDRAWAL_EVENT_KEY as `0x${string}`],
         },
       ],
     },
+    // plugins: [drizzleStorage({ db })],
 
     async transform({ block }) {
       const logger = useLogger();
 
-      // Validate environment variables
       const envCheck = validateRelayerVariables();
       if (!envCheck.isValid) {
         logger.error("Invalid relayer configuration", {
@@ -187,32 +199,167 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
       }
 
       logger.info(
-        `Processing block: ${block.header.blockNumber}, events: ${block.events.length}`
+        `📦 Processing block ${block.header.blockNumber} with ${block.events.length} events`
       );
 
+      if (block.events.length > 0) {
+        logger.info("Block events summary:", {
+          events: block.events.map((e) => ({
+            from: e.address?.toLowerCase(),
+            key: e.keys?.[0],
+            txHash: e.transactionHash,
+          })),
+        });
+      }
+
       for (const event of block.events) {
-        try {
-          // Filter events from pool contracts only
-          if (!isFromPoolContract(event)) {
-            logger.debug("Skipping event from non-pool contract");
-            continue;
-          }
+        const fromAddress = event.address?.toLowerCase();
 
-          const eventType = getEventType(event);
+        logger.info("🔍 Processing event", {
+          fromAddress,
+          firstKey: event.keys?.[0],
+          txHash: event.transactionHash,
+          eventIndex: event.eventIndex,
+        });
 
-          if (!eventType) {
-            logger.debug("Skipping non-Shadow Swap event");
-            continue;
-          }
-
-          logger.info(`Processing ${eventType} event`, {
-            txHash: event.transactionHash,
-            fromAddress: event.address,
+        if (!isFromPoolContract(event)) {
+          logger.debug("⏭️ Skipping non-pool contract event", {
+            fromAddress,
           });
+          continue;
+        }
 
-          // Check for duplicates
+        const eventType = getEventType(event);
+
+        if (!eventType) {
+          logger.warn("⚠️ Could not determine event type", {
+            keys: event.keys,
+            fromAddress,
+            txHash: event.transactionHash,
+            knownKeys: {
+              deposit: DEPOSIT_EVENT_KEY,
+              htlcCreated: HTLC_CREATED_EVENT_KEY,
+              withdrawal: WITHDRAWAL_EVENT_KEY,
+            },
+          });
+          continue;
+        }
+
+        logger.info(`✨ Processing ${eventType} event`, {
+          txHash: event.transactionHash,
+          fromAddress,
+          blockNumber: block.header.blockNumber,
+        });
+
+        const poolType = determinePoolType(event);
+        let eventData: any = {};
+        let swapId = "";
+
+        try {
+          switch (eventType) {
+            case "deposit":
+              const deposit = decodeDepositEvent(event);
+              if (!deposit) {
+                logger.error("❌ Failed to decode Deposit event", {
+                  txHash: event.transactionHash,
+                  keys: event.keys,
+                  data: event.data,
+                });
+                continue;
+              }
+              swapId = deposit.commitment;
+              eventData = {
+                commitment: deposit.commitment,
+                leaf_index: Number(deposit.leaf_index),
+                timestamp: Number(deposit.timestamp),
+              };
+              break;
+
+            case "htlc_created":
+              const htlc = decodeHTLCCreatedEvent(event);
+              if (!htlc) {
+                logger.error("❌ Failed to decode HTLCCreated event", {
+                  txHash: event.transactionHash,
+                  keys: event.keys,
+                  data: event.data,
+                });
+                continue;
+              }
+              swapId = htlc.nullifier;
+              eventData = {
+                nullifier: htlc.nullifier,
+                hash_lock: htlc.hash_lock,
+                timelock: Number(htlc.timelock),
+                timestamp: Number(htlc.timestamp),
+              };
+              break;
+
+            case "htlc_redeemed":
+              const withdrawal = decodeWithdrawalEvent(event);
+              if (!withdrawal) {
+                logger.error("❌ Failed to decode Withdrawal event", {
+                  txHash: event.transactionHash,
+                  keys: event.keys,
+                  data: event.data,
+                });
+                continue;
+              }
+              swapId = withdrawal.nullifier;
+              eventData = {
+                nullifier: withdrawal.nullifier,
+                timestamp: Number(withdrawal.timestamp),
+              };
+              break;
+
+            default:
+              logger.warn(`⚠️ Unknown event type: ${eventType}`);
+              continue;
+          }
+        } catch (error: any) {
+          logger.error("❌ Error decoding event:", {
+            error: error.message,
+            txHash: event.transactionHash,
+          });
+          continue;
+        }
+
+        const swapEventData: SwapEventData = {
+          event_type: eventType as any,
+          chain: "starknet",
+          transaction_hash: event.transactionHash,
+          pool_type: poolType,
+          ...eventData,
+        };
+
+        try {
+          const relayerSuccess = await sendEventToRelayer(
+            swapEventData,
+            logger
+          );
+
+          if (!relayerSuccess) {
+            logger.warn("⚠️ Failed to notify relayer", {
+              eventType,
+              txHash: event.transactionHash,
+            });
+          } else {
+            logger.info("✅ Event successfully sent to relayer", {
+              eventType,
+              txHash: event.transactionHash,
+            });
+          }
+        } catch (relayerError: any) {
+          logger.error("❌ Relayer call failed:", {
+            error: relayerError.message,
+            txHash: event.transactionHash,
+          });
+        }
+
+        try {
           const { db: storageDb } = useDrizzleStorage();
-          const eventId = `${event.transactionHash}_${eventType}`;
+          const eventId = `${event.transactionHash}_${
+            event.eventIndex || 0
+          }_${eventType}`;
 
           const existing = await storageDb
             .select()
@@ -221,85 +368,13 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
             .limit(1);
 
           if (existing.length > 0) {
-            logger.info("Event already processed, skipping", {
+            logger.info("⏭️ Event already in database, skipping save", {
               eventId,
               txHash: event.transactionHash,
             });
             continue;
           }
 
-          // Decode event based on type
-          let eventData: any = {};
-          let swapId = "";
-          let swapEventData: SwapEventData = {
-            event_type: eventType as any,
-            chain: "starknet",
-            transaction_hash: event.transactionHash,
-          };
-
-          switch (eventType) {
-            case "deposit":
-              const deposit = decodeDepositEvent(event);
-              if (!deposit) {
-                logger.warn("Failed to decode Deposit event", {
-                  txHash: event.transactionHash,
-                });
-                continue;
-              }
-
-              swapId = deposit.commitment;
-              eventData = {
-                commitment: deposit.commitment,
-                leaf_index: deposit.leaf_index,
-                timestamp: deposit.timestamp.toString(),
-              };
-              swapEventData.commitment = deposit.commitment;
-              break;
-
-            case "htlc_created":
-              const htlc = decodeHTLCCreatedEvent(event);
-              if (!htlc) {
-                logger.warn("Failed to decode HTLCCreated event", {
-                  txHash: event.transactionHash,
-                });
-                continue;
-              }
-
-              swapId = htlc.nullifier;
-              eventData = {
-                nullifier: htlc.nullifier,
-                hash_lock: htlc.hash_lock,
-                timelock: htlc.timelock.toString(),
-                timestamp: htlc.timestamp.toString(),
-              };
-              swapEventData.nullifier = htlc.nullifier;
-              swapEventData.hash_lock = htlc.hash_lock;
-              swapEventData.timelock = htlc.timelock.toString();
-              break;
-
-            case "htlc_redeemed":
-              const withdrawal = decodeWithdrawalEvent(event);
-              if (!withdrawal) {
-                logger.warn("Failed to decode Withdrawal event", {
-                  txHash: event.transactionHash,
-                });
-                continue;
-              }
-
-              swapId = withdrawal.nullifier;
-              eventData = {
-                nullifier: withdrawal.nullifier,
-                timestamp: withdrawal.timestamp.toString(),
-              };
-              swapEventData.nullifier = withdrawal.nullifier;
-              break;
-
-            default:
-              logger.warn(`Unknown event type: ${eventType}`);
-              continue;
-          }
-
-          // Store in database
           await storageDb.insert(htlc_events).values({
             eventId,
             swapId,
@@ -310,37 +385,21 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
             transactionHash: event.transactionHash,
             timestamp: new Date(),
             createdAt: new Date(),
+            inMerkleTree: false,
+            poolType: poolType,
           });
 
-          logger.info("Event stored in database", {
+          logger.info("✅ Event stored in database", {
             eventId,
             eventType,
-            swapId,
-            txHash: event.transactionHash,
+            poolType,
+            blockNumber: block.header.blockNumber,
           });
-
-          // Send to relayer
-          const relayerSuccess = await sendEventToRelayer(
-            swapEventData,
-            logger
-          );
-
-          if (!relayerSuccess) {
-            logger.warn("Failed to notify relayer (event stored in DB)", {
-              eventType,
-              txHash: event.transactionHash,
-            });
-          } else {
-            logger.info("Event successfully sent to relayer", {
-              eventType,
-              txHash: event.transactionHash,
-            });
-          }
-        } catch (error: any) {
-          logger.error("Error processing event:", {
-            error: error.message,
-            stack: error.stack,
+        } catch (dbError: any) {
+          logger.warn("⚠️ Failed to save to database (non-critical)", {
+            error: dbError.message,
             txHash: event.transactionHash,
+            eventType,
           });
         }
       }

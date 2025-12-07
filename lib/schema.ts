@@ -6,6 +6,8 @@ import {
   timestamp,
   jsonb,
   varchar,
+  boolean,
+  integer,
 } from "drizzle-orm/pg-core";
 
 export const htlc_events = pgTable("htlc_events", {
@@ -19,4 +21,7 @@ export const htlc_events = pgTable("htlc_events", {
   transactionHash: varchar("transaction_hash", { length: 66 }).notNull(),
   timestamp: timestamp("timestamp").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  inMerkleTree: boolean("in_merkle_tree").default(false),
+  merkleIndex: integer("merkle_index"),
+  poolType: varchar("pool_type", { length: 20 }),
 });

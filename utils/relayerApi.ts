@@ -7,8 +7,10 @@ interface SwapEventData {
   nullifier?: string;
   hash_lock?: string;
   commitment?: string;
-  timelock?: string;
+  timelock?: BigInt;
+  timestamp?: BigInt;
   secret?: string;
+  pool_type?: string;
 }
 
 interface RelayerResponse {
